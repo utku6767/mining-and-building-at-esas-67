@@ -143,6 +143,33 @@ class Game {
         this.init();
     }
 
+    playSound(category, blockType = 'grass') {
+        let soundDict = typeof GRASS_SOUNDS !== 'undefined' ? GRASS_SOUNDS : null;
+        if (blockType === 'dirt' && typeof DIRT_SOUNDS !== 'undefined') {
+            soundDict = DIRT_SOUNDS;
+        } else if (blockType === 'oak_log' && typeof WOOD_SOUNDS !== 'undefined') {
+            soundDict = WOOD_SOUNDS;
+        } else if ((blockType === 'grass' || blockType === 'oak_leaves') && typeof GRASS_SOUNDS !== 'undefined') {
+            soundDict = GRASS_SOUNDS;
+        }
+        
+        if (!soundDict || !soundDict[category] || soundDict[category].length === 0) return null;
+        const sounds = soundDict[category];
+        const src = sounds[Math.floor(Math.random() * sounds.length)];
+        const audio = new Audio(src);
+        audio.volume = 0.5;
+        audio.play().catch(e => console.warn('Audio play failed:', e));
+        return audio;
+    }
+
+    getStandingBlockType() {
+        const feetY = this.camera.position.y - this.eyeHeight;
+        const ix = Math.round(this.camera.position.x);
+        const iz = Math.round(this.camera.position.z);
+        const iy = Math.round(feetY - 0.1);
+        return this.world.getBlock(ix, iy, iz);
+    }
+
     async init() {
         await this.loadTextures();
         this.buildWorld();
@@ -232,8 +259,7 @@ class Game {
         const cy = Math.floor(this.camera.position.y);
         const cz = Math.floor(this.camera.position.z);
 
-        const simpleInstances = new Map();
-        const multiTextures = [];
+        const instances = new Map();
         const dummy = new THREE.Object3D();
 
         for (const [key, type] of this.world.blocks) {
@@ -244,19 +270,16 @@ class Game {
                 Math.abs(y - cy) > renderDist ||
                 Math.abs(z - cz) > renderDist) continue;
 
-            const mat = this.getBlockMaterial(type);
-            if (Array.isArray(mat)) {
-                multiTextures.push({ x, y, z, type, mat });
-            } else {
-                if (!simpleInstances.has(type)) simpleInstances.set(type, []);
-                simpleInstances.get(type).push({ x, y, z });
+            if (!instances.has(type)) {
+                instances.set(type, []);
             }
+            instances.get(type).push({ x, y, z });
         }
 
         const group = new THREE.Group();
 
-        // Single-texture blocks with InstancedMesh
-        for (const [type, positions] of simpleInstances) {
+        // Use InstancedMesh for all block types
+        for (const [type, positions] of instances) {
             const geo = new THREE.BoxGeometry(1, 1, 1);
             const mat = this.getBlockMaterial(type);
             const mesh = new THREE.InstancedMesh(geo, mat, positions.length);
@@ -267,16 +290,6 @@ class Game {
                 mesh.setMatrixAt(i, dummy.matrix);
             });
 
-            mesh.castShadow = false;
-            mesh.receiveShadow = false;
-            group.add(mesh);
-        }
-
-        // Multi-texture blocks
-        for (const block of multiTextures) {
-            const geo = new THREE.BoxGeometry(1, 1, 1);
-            const mesh = new THREE.Mesh(geo, block.mat);
-            mesh.position.set(block.x, block.y, block.z);
             mesh.castShadow = false;
             mesh.receiveShadow = false;
             group.add(mesh);
@@ -516,7 +529,12 @@ class Game {
 
         const stage = Math.floor(progress * 10);
         if (stage >= 10) {
+            if (this.currentMiningAudio) {
+                this.currentMiningAudio.pause();
+                this.currentMiningAudio.currentTime = 0;
+            }
             this.world.setBlock(this.breakingBlock.x, this.breakingBlock.y, this.breakingBlock.z, null);
+            this.playSound('dig', this.breakingBlock.type);
             this.buildWorld();
             this.stopBreaking();
             return;
@@ -525,9 +543,14 @@ class Game {
         this.updateBreakingOverlay(stage, this.breakingBlock);
 
         if (progress < 1) {
-            setTimeout(() => {
-                if (this.mouse.leftDown && this.breakingBlock) this.animateHand();
-            }, 250);
+            const now = performance.now();
+            if (!this.lastMiningAnimTime || now - this.lastMiningAnimTime > 250) {
+                this.animateHand();
+                this.lastMiningAnimTime = now;
+                if (Math.random() > 0.3) {
+                    this.currentMiningAudio = this.playSound('mining', this.breakingBlock.type);
+                }
+            }
         }
     }
 
@@ -617,6 +640,7 @@ class Game {
         if (this.aabbIntersect(playerBB, blockBB)) return;
 
         this.world.setBlock(placeX, placeY, placeZ, blockType);
+        this.playSound('hit', blockType);
         this.buildWorld();
     }
 
@@ -644,6 +668,14 @@ class Game {
             const len = Math.sqrt(moveX * moveX + moveZ * moveZ);
             moveX /= len;
             moveZ /= len;
+
+            if (this.onGround) {
+                const now = performance.now();
+                if (!this.lastFootstepTime || now - this.lastFootstepTime > 350) {
+                    this.playSound('jump', this.getStandingBlockType());
+                    this.lastFootstepTime = now;
+                }
+            }
         }
 
         this.velocity.x = moveX * this.speed;
@@ -670,6 +702,7 @@ class Game {
 
         if (this.keys['Space'] && this.onGround) {
             this.velocity.y = this.jumpStrength;
+            this.playSound('jump', this.getStandingBlockType());
             this.onGround = false;
         }
     }
